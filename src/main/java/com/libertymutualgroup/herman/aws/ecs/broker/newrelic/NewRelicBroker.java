@@ -26,12 +26,11 @@ import com.libertymutualgroup.herman.aws.ecs.logging.LoggingService;
 import com.libertymutualgroup.herman.logging.HermanLogger;
 import com.libertymutualgroup.herman.util.FileUtil;
 import org.apache.commons.lang3.StringUtils;
-import org.springframework.http.HttpStatus.Series;
 
 import java.nio.charset.Charset;
 import java.util.Optional;
 
-import static org.springframework.http.HttpStatus.Series.SUCCESSFUL;
+import static com.libertymutualgroup.herman.util.HttpStatusUtil.isSuccessful;
 
 public class NewRelicBroker {
 
@@ -77,8 +76,8 @@ public class NewRelicBroker {
 
         InvokeResult invokeResult = this.lambdaClient.invoke(dnsBrokerInvokeRequest);
 
-        if (SUCCESSFUL.equals(Series.valueOf(invokeResult.getStatusCode())) && StringUtils
-            .isEmpty(invokeResult.getFunctionError())) {
+
+        if (isSuccessful(invokeResult.getStatusCode()) && StringUtils.isEmpty(invokeResult.getFunctionError())) {
             String nrBrokerResponseJson = new String(invokeResult.getPayload().array(), Charset.forName("UTF-8"));
 
             NewRelicBrokerResponse response;
@@ -103,7 +102,8 @@ public class NewRelicBroker {
             addNewRelicLinkToLogs(response.getApplicationId());
         } else {
             buildLogger.addLogEntry("... Error thrown by the NR Broker given payload: " + payload);
-            throw new RuntimeException("Error invoking the New Relic Broker: " + invokeResult);
+            String nrBrokerResponseJson = new String(invokeResult.getPayload().array(), Charset.forName("UTF-8"));
+            throw new RuntimeException("Error invoking the New Relic Broker: " + nrBrokerResponseJson);
         }
     }
 
@@ -147,12 +147,26 @@ public class NewRelicBroker {
                     .mapInProperties(fileUtil.findFile(newRelicConfigurationDefinition.getNrqlConditions(), false));
             }
 
+            String infrastructureConditions = null;
+            if (StringUtils.isNotBlank(newRelicConfigurationDefinition.getInfrastructureConditions())) {
+                infrastructureConditions = propertyHandler
+                    .mapInProperties(fileUtil.findFile(newRelicConfigurationDefinition.getInfrastructureConditions(), false));
+            }
+
+            String synthetics = null;
+            if (StringUtils.isNotBlank(newRelicConfigurationDefinition.getSynthetics())) {
+                synthetics = propertyHandler
+                    .mapInProperties(fileUtil.findFile(newRelicConfigurationDefinition.getSynthetics(), false));
+            }
+
             newRelicConfiguration = new NewRelicConfiguration()
                 .withDbName(dbName)
                 .withChannels(channels)
                 .withConditions(conditions)
                 .withRdsPluginsConditions(rdsPluginsConditions)
                 .withNrqlConditions(nrqlConditions)
+                .withInfrastructureConditions(infrastructureConditions)
+                .withSynthetics(synthetics)
                 .withApdex(newRelicConfigurationDefinition.getApdex());
         } else {
             newRelicConfiguration = null;

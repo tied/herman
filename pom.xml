@@ -5,7 +5,7 @@
 
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.libertymutualgroup.herman</groupId>
-  <artifactId>herman-bamboo-plugin</artifactId>
+  <artifactId>herman</artifactId>
   <version>1.0.0-SNAPSHOT</version>
 
   <organization>
@@ -22,11 +22,12 @@
     <amps.version>6.2.11</amps.version>
     <plugin.testrunner.version>1.2.3</plugin.testrunner.version>
     <atlassian.spring.scanner.version>1.2.13</atlassian.spring.scanner.version>
-    <aws-sdk.version>1.11.335</aws-sdk.version>
+    <aws-sdk.version>1.11.386</aws-sdk.version>
+    <spring.framework.version>5.1.1.RELEASE</spring.framework.version>
     <!-- This key is used to keep the consistency between the key in atlassian-plugin.xml
       and the key to generate bundle. -->
     <atlassian.plugin.key>${project.groupId}.${project.artifactId}</atlassian.plugin.key>
-
+    <surefire.version>2.22.0</surefire.version>
     <jacoco.version>0.8.0</jacoco.version>
     <coverage.reports.dir>${basedir}/target/coverage-reports</coverage.reports.dir>
     <sonar.jacoco.reportPath>${coverage.reports.dir}/jacoco-unit.exec</sonar.jacoco.reportPath>
@@ -45,6 +46,17 @@
         <groupId>org.apache.httpcomponents</groupId>
         <artifactId>httpcore</artifactId>
         <version>4.4.4</version>
+      </dependency>
+      <dependency>
+        <groupId>com.atlassian.core</groupId>
+        <artifactId>atlassian-core</artifactId>
+        <version>5.0.2</version>
+        <exclusions>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
+        </exclusions>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -199,6 +211,10 @@
     </dependency>
     <dependency>
       <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk-autoscaling</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
       <artifactId>aws-java-sdk-dynamodb</artifactId>
     </dependency>
     <dependency>
@@ -213,6 +229,11 @@
       <version>3.4</version>
     </dependency>
     <dependency>
+      <groupId>commons-io</groupId>
+      <artifactId>commons-io</artifactId>
+      <version>2.6</version>
+    </dependency>
+    <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-log4j12</artifactId>
       <version>1.7.16</version>
@@ -222,6 +243,18 @@
       <artifactId>jackson-dataformat-yaml</artifactId>
       <version>2.6.6</version>
     </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+      <version>${spring.framework.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.collections</groupId>
+      <artifactId>google-collections</artifactId>
+      <version>1.0</version>
+    </dependency>
+
+
 
     <!-- JACOCO OFFLINE INSTRUMENTATION -->
     <dependency>
@@ -238,6 +271,11 @@
       <version>1.9.5</version>
       <scope>test</scope>
     </dependency>
+      <dependency>
+          <groupId>info.picocli</groupId>
+          <artifactId>picocli</artifactId>
+          <version>3.1.0</version>
+      </dependency>
   </dependencies>
 
   <build>
@@ -245,6 +283,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
+        <version>${surefire.version}</version>
         <configuration>
           <includes>
             <include>**/*Test.java</include>
@@ -334,6 +373,35 @@
             <goals>
               <goal>testCompile</goal>
             </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Maven Shade Plugin -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.1.1</version>
+        <executions>
+          <!-- Run shade goal on package phase -->
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <!-- add Main-Class to manifest file -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <manifestEntries>
+                    <Main-Class>com.libertymutualgroup.herman.cli.Cli</Main-Class>
+                    <Implementation-Title>${project.artifactId}</Implementation-Title>
+                    <Implementation-Version>${project.version}</Implementation-Version>
+                    <Implementation-Vendor-Id>${project.groupId}</Implementation-Vendor-Id>
+                  </manifestEntries>
+                </transformer>
+              </transformers>
+            </configuration>
           </execution>
         </executions>
       </plugin>

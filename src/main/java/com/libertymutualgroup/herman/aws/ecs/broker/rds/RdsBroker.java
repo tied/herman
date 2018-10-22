@@ -20,7 +20,6 @@ import com.amazonaws.services.kms.model.EncryptRequest;
 import com.amazonaws.services.rds.AmazonRDS;
 import com.amazonaws.services.rds.model.OptionGroup;
 import com.amazonaws.services.rds.model.Parameter;
-import com.amazonaws.services.rds.model.Tag;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.libertymutualgroup.herman.aws.ecs.EcsPush;
@@ -28,6 +27,8 @@ import com.libertymutualgroup.herman.aws.ecs.EcsPushContext;
 import com.libertymutualgroup.herman.aws.ecs.EcsPushDefinition;
 import com.libertymutualgroup.herman.aws.ecs.PropertyHandler;
 import com.libertymutualgroup.herman.aws.ecs.cluster.EcsClusterMetadata;
+import com.libertymutualgroup.herman.aws.tags.HermanTag;
+import com.libertymutualgroup.herman.aws.tags.TagUtil;
 import com.libertymutualgroup.herman.logging.HermanLogger;
 import com.libertymutualgroup.herman.util.DateUtil;
 import com.libertymutualgroup.herman.util.FileUtil;
@@ -68,7 +69,7 @@ public class RdsBroker {
         EcsPushDefinition definition,
         EcsClusterMetadata clusterMetadata, EcsPushFactory pushFactory, FileUtil fileUtil) {
         this.logger = pushContext.getLogger();
-        this.propertyHandler = pushContext.getBambooPropertyHandler();
+        this.propertyHandler = pushContext.getPropertyHandler();
         this.client = client;
         this.kmsClient = kmsClient;
         this.targetKeyId = targetKeyId;
@@ -81,23 +82,26 @@ public class RdsBroker {
 
     public RdsInstance brokerDb() {
         RdsInstance rds = definition.getDatabase();
-        rds.setDefaults();
+        rds.setDefaults(targetKeyId);
         String instanceId = rds.getDBInstanceIdentifier() != null ? rds.getDBInstanceIdentifier()
             : definition.getAppName();
         String masterUserPassword = this.generateRandomPassword();
         Boolean staticPassword = rds.getAppEncryptedPassword() != null || rds.getAdminEncryptedPassword() != null;
-        List<Tag> tags = new ArrayList<>();
-        tags.add(new Tag().withKey(this.pushContext.getTaskProperties().getSbuTagKey())
+        List<HermanTag> tags = new ArrayList<>();
+        tags.add(new HermanTag().withKey(this.pushContext.getTaskProperties().getSbuTagKey())
             .withValue(clusterMetadata.getNewrelicSbuTag()));
-        tags.add(new Tag().withKey(this.pushContext.getTaskProperties().getOrgTagKey())
+        tags.add(new HermanTag().withKey(this.pushContext.getTaskProperties().getOrgTagKey())
             .withValue(clusterMetadata.getNewrelicOrgTag()));
-        tags.add(
-            new Tag().withKey(this.pushContext.getTaskProperties().getAppTagKey()).withValue(definition.getAppName()));
-        tags.add(new Tag().withKey(this.pushContext.getTaskProperties().getClusterTagKey())
+        tags.add(new HermanTag().withKey(this.pushContext.getTaskProperties().getAppTagKey()).withValue(definition.getAppName()));
+        tags.add(new HermanTag().withKey(this.pushContext.getTaskProperties().getClusterTagKey())
             .withValue(clusterMetadata.getClusterId()));
         if (definition.getNotificationWebhook() != null) {
-            tags.add(new Tag().withKey("NotificationWebhook").withValue(definition.getNotificationWebhook()));
+            tags.add(new HermanTag().withKey("NotificationWebhook").withValue(definition.getNotificationWebhook()));
         }
+        if (definition.getTags() != null) {
+            tags = TagUtil.mergeTags(tags, definition.getTags());
+        }
+
 
         String encryptedPassword;
         RdsClient rdsClient;
@@ -110,7 +114,7 @@ public class RdsBroker {
             rdsClient = new StandardRdsClient(client, rds, clusterMetadata, tags, logger);
         }
 
-        Boolean newDb = !rdsClient.dbExists(instanceId);
+        boolean newDb = !rdsClient.dbExists(instanceId);
 
         if (!newDb) {
             logger.addLogEntry("Finding existing RDS instance");
@@ -183,12 +187,16 @@ public class RdsBroker {
     }
 
     private RdsInstance brokerCredentials(RdsInstance instance, String encryptedMasterPassword, AWSKMS awskmsClient) {
+        if (propertyHandler.lookupVariable("herman.rdsCredentialBrokerImage") == null) {
+            logger.addErrorLogEntry("Missing RDS Credential Broker Image, skipping...");
+            return instance;
+        }
 
         if (instance.getEngine().equalsIgnoreCase(POSTGRES_ENGINE)
-            || instance.getEngine().equalsIgnoreCase(MYSQL_ENGINE)
-            || instance.getEngine().contains(AURORA_ENGINE)) {
-            logger.addLogEntry("Brokering credentials for " + instance.getEngine() + " instance "
-                + instance.getEndpoint().getAddress());
+                || instance.getEngine().equalsIgnoreCase(MYSQL_ENGINE)
+                || instance.getEngine().contains(AURORA_ENGINE)) {
+            logger.addLogEntry(String.format("Updating credentials for %s (%s) instance: %s",
+                instance.getEngine(), instance.getEngineVersion(), instance.getEndpoint().getAddress()));
 
             String appUsername = instance.getAppUsername() != null ? instance.getAppUsername()
                 : getUsername(instance, "app");
@@ -196,7 +204,6 @@ public class RdsBroker {
             String appPassword = instance.getAppEncryptedPassword() != null ? instance.getAppEncryptedPassword()
                 : this.encrypt(awskmsClient, targetKeyId, this.generateRandomPassword());
 
-            logger.addLogEntry("... DB instance type is " + instance.getEngine().toLowerCase());
             logger.addLogEntry("... app username: " + appUsername);
             logger.addLogEntry("... app encrypted password: " + appPassword);
             logger.addLogEntry("... app password encrypted using KMS key: " + targetKeyId);
@@ -223,6 +230,7 @@ public class RdsBroker {
             propertyHandler.addProperty("DB_APP_PASSWORD", appPassword);
             propertyHandler.addProperty("DB_ADMIN_USERNAME", adminUsername);
             propertyHandler.addProperty("DB_ADMIN_PASSWORD", adminPassword);
+            propertyHandler.addProperty("DB_EXTENSIONS", getExtensions(instance));
             propertyHandler.addProperty("classpathTemplate", "/brokerTemplates/rds/credential-broker.yml");
 
             instance.setAppUsername(appUsername);
@@ -241,6 +249,14 @@ public class RdsBroker {
         return instance;
     }
 
+    private String getExtensions(RdsInstance instance) {
+        if (instance.getExtensions().size() > 0) {
+            return String.join(",", instance.getExtensions());
+        } else {
+            return "none"; // TODO - refactor this once the Lambda broker is used
+        }
+    }
+
     private RdsInstance injectCipherNotation(RdsInstance instance) {
         String appPassword = instance.getAppEncryptedPassword();
         String adminPassword = instance.getAdminEncryptedPassword();
@@ -252,7 +268,8 @@ public class RdsBroker {
 
         Set<String> encryptablePasswordNames = new HashSet<>(Arrays.asList("spring.datasource.password",
             "spring_datasource_password", "spring.datasource.tomcat.password",
-            "spring_datasource_tomcat_password", "liquibase.password", "liquibase_password", "flyway.password",
+            "spring_datasource_tomcat_password", "spring.liquibase.password", "spring_liquibase_password",
+            "liquibase.password", "liquibase_password", "flyway.password",
             "flyway_password"));
 
         if (instance.getCredPrefix() != null) {
@@ -314,10 +331,15 @@ public class RdsBroker {
     }
 
     private String getCredentialBrokerProfile(RdsInstance instance) {
+        if (instance.getEngine().equalsIgnoreCase(MYSQL_ENGINE)
+                && instance.getEngineVersion().contains("5.6")) {
+            return "mysql56";
+        }
+
         if ((instance.getEngine().equalsIgnoreCase(MYSQL_ENGINE)
-            || (instance.getEngine().equalsIgnoreCase(AURORA_ENGINE))
-            || ("aurora-mysql".equalsIgnoreCase(instance.getEngine())))
-            && instance.getIAMDatabaseAuthenticationEnabled()) {
+                || (instance.getEngine().equalsIgnoreCase(AURORA_ENGINE))
+                || ("aurora-mysql".equalsIgnoreCase(instance.getEngine())))
+                && instance.getIAMDatabaseAuthenticationEnabled()) {
             return "mysqliam";
         }
 
@@ -326,8 +348,8 @@ public class RdsBroker {
         }
 
         if ((instance.getEngine().equalsIgnoreCase(AURORA_ENGINE)
-            || "aurora-mysql".equalsIgnoreCase(instance.getEngine()))
-            && !instance.getIAMDatabaseAuthenticationEnabled()) {
+                || "aurora-mysql".equalsIgnoreCase(instance.getEngine()))
+                && !instance.getIAMDatabaseAuthenticationEnabled()) {
             return MYSQL_ENGINE; // mysql profile for aurora without IAM auth
         }
 

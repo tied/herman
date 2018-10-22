@@ -27,6 +27,8 @@ public class NewRelicConfiguration {
     private String channels;
     private String rdsPluginsConditions;
     private String nrqlConditions;
+    private String infrastructureConditions;
+    private String synthetics;
     private String dbName;
     private String apdex;
 
@@ -62,6 +64,22 @@ public class NewRelicConfiguration {
         this.nrqlConditions = nrqlConditions;
     }
 
+    public String getInfrastructureConditions() {
+        return infrastructureConditions;
+    }
+
+    public void setInfrastructureConditions(String infrastructureConditions) {
+        this.infrastructureConditions = infrastructureConditions;
+    }
+
+    public String getSynthetics() {
+        return synthetics;
+    }
+
+    public void setSynthetics(String synthetics) {
+        this.synthetics = synthetics;
+    }
+
     public String getDbName() {
         return dbName;
     }
@@ -85,6 +103,8 @@ public class NewRelicConfiguration {
             ", channels='" + channels + '\'' +
             ", rdsPluginsConditions='" + rdsPluginsConditions + '\'' +
             ", nrqlConditions='" + nrqlConditions + '\'' +
+            ", infrastructureConditions='" + infrastructureConditions + '\'' +
+            ", synthetics='" + synthetics + '\'' +
             ", dbName='" + dbName + '\'' +
             ", apdex='" + apdex + '\'' +
             '}';
@@ -105,8 +125,18 @@ public class NewRelicConfiguration {
         return this;
     }
 
+    public NewRelicConfiguration withInfrastructureConditions(final String infrastructureConditions) {
+        this.infrastructureConditions = infrastructureConditions;
+        return this;
+    }
+
     public NewRelicConfiguration withNrqlConditions(final String nrqlConditions) {
         this.nrqlConditions = nrqlConditions;
+        return this;
+    }
+
+    public NewRelicConfiguration withSynthetics(final String synthetics) {
+        this.synthetics = synthetics;
         return this;
     }
 

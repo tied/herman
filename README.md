@@ -1,6 +1,9 @@
 # Herman: AWS ECS Runtime and Deployment (Docker-on-AWS)
 [Join us on Slack!](https://join.slack.com/t/herman-dev/shared_invite/enQtMzU0ODIyNzkxOTQxLWU1NjExOTdkY2I2ZmYyYzQxNGI4OTI0OTU0ZTBkNWY2OWQyNzNiZDFkZTAyMTAyNjcxZDk4NWRjODdjZGNjYTQ)
 
+[![Build Status](https://travis-ci.org/libertymutual/herman.svg?branch=master)](https://travis-ci.org/libertymutual/herman)
+[ ![Download](https://api.bintray.com/packages/herman/Herman/herman-bamboo-plugin/images/download.svg) ](https://bintray.com/herman/Herman/herman-bamboo-plugin/_latestVersion)
+
 ## Background
 
 Herman was created due to a need to deploy Docker containers to ECS for
@@ -35,15 +38,8 @@ containerDefinitions:
 
 #### Plugin Setup
 
-Teams must add organization-specific config values to a property file
-before deploying Herman as a Bamboo plugin: config/plugin-tasks.yml. 
+Teams must add organization-specific configuration files to an S3 bucket before using Herman in each unique AWS account.
 [See: Plugin configuration](docs/Plugin_Configuration.md)
-
-There are two other files that need to be updated:
--   ECR IAM Policy: [See: ECR Policy](src/main/resources/iam/ecr-policy.json).
-    This is the default IAM policy used when creating ECR repositories.
--   KMS IAM Policy: [See: KMS Policy](src/main/resources/iam/kms-policy.json).
-    This is the default IAM policy used when creating KMS keys.
     
 #### Broker Setup
 
@@ -62,6 +58,10 @@ ECS supports three basic styles of container workloads:
 -   batch (run this task, shut down when done)
 
 [See: Task Definition Conventions](docs/Task_Definition_Conventions.md)
+
+## Cluster Deployment
+
+Herman supports deploying and managing ECS clusters. [See: Cluster Deployment](docs/Cluster_Deployment.md)
 
 ## Application Identity (AWS "IAM")
 

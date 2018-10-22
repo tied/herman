@@ -15,7 +15,10 @@
  */
 package com.libertymutualgroup.herman.aws.ecs.broker.kms;
 
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.regions.Regions;
 import com.amazonaws.services.kms.AWSKMS;
+import com.amazonaws.services.kms.model.AWSKMSException;
 import com.amazonaws.services.kms.model.AliasListEntry;
 import com.amazonaws.services.kms.model.CancelKeyDeletionRequest;
 import com.amazonaws.services.kms.model.CreateAliasRequest;
@@ -25,6 +28,9 @@ import com.amazonaws.services.kms.model.DeleteAliasRequest;
 import com.amazonaws.services.kms.model.DescribeKeyRequest;
 import com.amazonaws.services.kms.model.DescribeKeyResult;
 import com.amazonaws.services.kms.model.EnableKeyRequest;
+import com.amazonaws.services.kms.model.EnableKeyRotationRequest;
+import com.amazonaws.services.kms.model.GetKeyRotationStatusRequest;
+import com.amazonaws.services.kms.model.GetKeyRotationStatusResult;
 import com.amazonaws.services.kms.model.KeyListEntry;
 import com.amazonaws.services.kms.model.ListAliasesRequest;
 import com.amazonaws.services.kms.model.ListAliasesResult;
@@ -36,34 +42,42 @@ import com.amazonaws.services.kms.model.PutKeyPolicyRequest;
 import com.amazonaws.services.kms.model.ScheduleKeyDeletionRequest;
 import com.amazonaws.services.kms.model.Tag;
 import com.amazonaws.services.kms.model.TagResourceRequest;
-import com.amazonaws.util.IOUtils;
-import com.libertymutualgroup.herman.aws.AwsExecException;
 import com.libertymutualgroup.herman.aws.ecs.EcsPushDefinition;
 import com.libertymutualgroup.herman.aws.ecs.PropertyHandler;
 import com.libertymutualgroup.herman.logging.HermanLogger;
 import com.libertymutualgroup.herman.task.common.CommonTaskProperties;
+import com.libertymutualgroup.herman.util.ConfigurationUtil;
 import com.libertymutualgroup.herman.util.FileUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 public class KmsBroker {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(KmsBroker.class);
+
     public static final String KMS_POLICY_JSON = "kms-policy.json";
     private static final String PREFIX = "alias/herman/";
-    private HermanLogger logger;
+    private HermanLogger hermanLogger;
     private PropertyHandler handler;
     private FileUtil fileUtil;
     private CommonTaskProperties taskProperties;
+    private AWSCredentials sessionCredentials;
+    private String customConfigurationBucket;
+    private Regions region;
 
-    public KmsBroker(HermanLogger logger, PropertyHandler handler, FileUtil fileUtil,
-        CommonTaskProperties taskProperties) {
-        this.logger = logger;
+    public KmsBroker(HermanLogger hermanLogger, PropertyHandler handler, FileUtil fileUtil,
+        CommonTaskProperties taskProperties, AWSCredentials sessionCredentials, String customConfigurationBucket, Regions region) {
+        this.hermanLogger = hermanLogger;
         this.handler = handler;
         this.fileUtil = fileUtil;
         this.taskProperties = taskProperties;
+        this.sessionCredentials = sessionCredentials;
+        this.customConfigurationBucket = customConfigurationBucket;
+        this.region = region;
     }
 
     public boolean isActive(EcsPushDefinition definition) {
@@ -71,7 +85,7 @@ public class KmsBroker {
     }
 
     public String brokerKey(AWSKMS client, KmsAppDefinition definition, List<Tag> tags) {
-        logger.addLogEntry("Brokering KMS key");
+        hermanLogger.addLogEntry("Brokering KMS key");
         String keyName = getKeyName(definition);
         String appKeyAlias = PREFIX + keyName;
 
@@ -82,7 +96,7 @@ public class KmsBroker {
         }
 
         if (!Optional.ofNullable(keyId).isPresent()) {
-            logger.addLogEntry("... Creating new KMS key: " + appKeyAlias);
+            hermanLogger.addLogEntry("... Creating new KMS key: " + appKeyAlias);
             CreateKeyResult key = client
                 .createKey(
                     new CreateKeyRequest().withDescription("Herman key for " + definition.getAppName()).withTags(tags));
@@ -93,7 +107,7 @@ public class KmsBroker {
         } else {
             DescribeKeyResult key = client.describeKey(new DescribeKeyRequest().withKeyId(keyId));
             if (key.getKeyMetadata().getDeletionDate() != null) {
-                logger.addLogEntry("... Revoking the delete!");
+                hermanLogger.addLogEntry("... Revoking the delete!");
                 client.cancelKeyDeletion(new CancelKeyDeletionRequest().withKeyId(keyId));
                 client.enableKey(new EnableKeyRequest().withKeyId(keyId));
             }
@@ -109,10 +123,18 @@ public class KmsBroker {
                 .withPolicyName("default")
                 .withKeyId(keyId)
                 .withPolicy(policy));
-            logger.addLogEntry("... KMS key policy updated");
+            hermanLogger.addLogEntry("... KMS key policy updated");
         } catch (Exception ex) {
             throw new RuntimeException(
                 String.format("Error updating key policy for key ID %s. Policy: %s", keyId, policy), ex);
+        }
+
+        GetKeyRotationStatusResult statusResult = client.getKeyRotationStatus(new GetKeyRotationStatusRequest().withKeyId(keyId));
+        if (!statusResult.isKeyRotationEnabled()) {
+            client.enableKeyRotation(new EnableKeyRotationRequest().withKeyId(keyId));
+            hermanLogger.addLogEntry("... KMS key rotation enabled");
+        } else {
+            hermanLogger.addLogEntry("... KMS key rotation already enabled");
         }
 
         return keyId;
@@ -140,7 +162,7 @@ public class KmsBroker {
                 .findAny();
             if (aliasOptional.isPresent()) {
                 keyId = aliasOptional.get().getTargetKeyId();
-                logger.addLogEntry("... KMS key found: " + appKeyAlias + ":" + keyId);
+                hermanLogger.addLogEntry("... KMS key found: " + appKeyAlias + ":" + keyId);
             }
         } while (Optional.ofNullable(listAliasesNextMarker).isPresent() && !Optional.ofNullable(keyId).isPresent());
         return keyId;
@@ -154,15 +176,21 @@ public class KmsBroker {
             listKeysNextMarker = listKeysResult.getNextMarker();
 
             for (KeyListEntry key : listKeysResult.getKeys()) {
-                ListResourceTagsResult keyTags = client
-                    .listResourceTags(new ListResourceTagsRequest().withKeyId(key.getKeyId()));
-                for (Tag t : keyTags.getTags()) {
+                List<Tag> tags = Collections.emptyList();
+                try {
+                    ListResourceTagsResult keyTags = client
+                        .listResourceTags(new ListResourceTagsRequest().withKeyId(key.getKeyId()));
+                    tags = keyTags.getTags();
+                } catch (AWSKMSException ex) {
+                    LOGGER.debug("Error getting tags for " + key.getKeyId(), ex);
+                }
+                for (Tag t : tags) {
                     if (this.taskProperties.getAppTagKey().equals(t.getTagKey()) && t.getTagValue()
                         .equals(definition.getAppName())) {
                         DescribeKeyResult hiddenKey = client
                             .describeKey(new DescribeKeyRequest().withKeyId(key.getKeyArn()));
                         if (hiddenKey.getKeyMetadata().getDeletionDate() != null) {
-                            logger.addLogEntry(
+                            hermanLogger.addLogEntry(
                                 "... KMS Key found: " + appKeyAlias + ":" + key.getKeyId() + " - Revoking the delete");
                             client.cancelKeyDeletion(new CancelKeyDeletionRequest().withKeyId(key.getKeyArn()));
                             client.enableKey(new EnableKeyRequest().withKeyId(key.getKeyArn()));
@@ -199,16 +227,11 @@ public class KmsBroker {
 
         String policy;
         if (customPolicy != null) {
-            logger.addLogEntry("... Using custom KMS policy");
+            hermanLogger.addLogEntry("... Using custom KMS policy");
             policy = customPolicy;
         } else {
-            logger.addLogEntry("... Using default KMS policy");
-            InputStream policyStream = getClass().getResourceAsStream("/iam/" + KMS_POLICY_JSON);
-            try {
-                policy = IOUtils.toString(policyStream);
-            } catch (IOException e) {
-                throw new AwsExecException(e);
-            }
+            hermanLogger.addLogEntry("... Using default KMS policy");
+            policy = ConfigurationUtil.getKMSPolicyAsString(sessionCredentials, hermanLogger, customConfigurationBucket, this.region);
         }
         return policy;
     }
@@ -220,7 +243,7 @@ public class KmsBroker {
         String keyId = getExistingKeyId(client, appKeyAlias);
 
         if (Optional.ofNullable(keyId).isPresent()) {
-            logger.addLogEntry("Key exists but yml cleared - deleting: " + appKeyAlias);
+            hermanLogger.addLogEntry("Key exists but yml cleared - deleting: " + appKeyAlias);
             client.deleteAlias(new DeleteAliasRequest().withAliasName(appKeyAlias));
             client.scheduleKeyDeletion(new ScheduleKeyDeletionRequest().withKeyId(keyId));
         }

@@ -24,7 +24,7 @@ import com.libertymutualgroup.herman.task.ecs.ECSPushTaskProperties;
 public class EcsPushContext {
 
     private HermanLogger logger;
-    private PropertyHandler bambooPropertyHandler;
+    private PropertyHandler propertyHandler;
     private String envName;
     private AWSCredentials sessionCredentials;
     private ClientConfiguration awsClientConfig;
@@ -32,6 +32,7 @@ public class EcsPushContext {
     private int timeout;
     private String rootPath;
     private ECSPushTaskProperties taskProperties;
+    private String customConfigurationBucket;
 
     public HermanLogger getLogger() {
         return logger;
@@ -41,12 +42,12 @@ public class EcsPushContext {
         this.logger = logger;
     }
 
-    public PropertyHandler getBambooPropertyHandler() {
-        return bambooPropertyHandler;
+    public PropertyHandler getPropertyHandler() {
+        return propertyHandler;
     }
 
-    public void setBambooPropertyHandler(PropertyHandler bambooPropertyHandler) {
-        this.bambooPropertyHandler = bambooPropertyHandler;
+    public void setPropertyHandler(PropertyHandler propertyHandler) {
+        this.propertyHandler = propertyHandler;
     }
 
     public String getEnvName() {
@@ -105,13 +106,21 @@ public class EcsPushContext {
         this.taskProperties = taskProperties;
     }
 
+    public String getCustomConfigurationBucket() {
+        return customConfigurationBucket;
+    }
+
+    public void setCustomConfigurationBucket(String customConfigurationBucket) {
+        this.customConfigurationBucket = customConfigurationBucket;
+    }
+
     public EcsPushContext withLogger(final HermanLogger logger) {
         this.logger = logger;
         return this;
     }
 
-    public EcsPushContext withBambooPropertyHandler(final PropertyHandler bambooPropertyHandler) {
-        this.bambooPropertyHandler = bambooPropertyHandler;
+    public EcsPushContext withPropertyHandler(final PropertyHandler propertyHandler) {
+        this.propertyHandler = propertyHandler;
         return this;
     }
 
@@ -150,11 +159,16 @@ public class EcsPushContext {
         return this;
     }
 
+    public EcsPushContext withCustomConfigurationBucket(final String customConfigurationBucket) {
+        this.customConfigurationBucket = customConfigurationBucket;
+        return this;
+    }
+
     @Override
     public String toString() {
         return "EcsPushContext{" +
             "logger=" + logger +
-            ", bambooPropertyHandler=" + bambooPropertyHandler +
+            ", propertyHandler=" + propertyHandler +
             ", envName='" + envName + '\'' +
             ", sessionCredentials=" + sessionCredentials +
             ", awsClientConfig=" + awsClientConfig +
@@ -162,6 +176,7 @@ public class EcsPushContext {
             ", timeout=" + timeout +
             ", rootPath='" + rootPath + '\'' +
             ", taskProperties=" + taskProperties +
+            ", customConfigurationBucket='" + customConfigurationBucket + '\'' +
             '}';
     }
 }

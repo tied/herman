@@ -15,26 +15,30 @@
  */
 package com.libertymutualgroup.herman.task.cft;
 
+import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.regions.Regions;
 import com.atlassian.bamboo.deployments.execution.DeploymentTaskContext;
-import com.atlassian.bamboo.task.TaskException;
 import com.atlassian.bamboo.task.TaskResult;
 import com.atlassian.bamboo.task.TaskResultBuilder;
 import com.atlassian.bamboo.variable.CustomVariableContext;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.libertymutualgroup.herman.aws.AbstractDeploymentTask;
-import com.libertymutualgroup.herman.aws.CredentialsHandler;
+import com.libertymutualgroup.herman.aws.AwsExecException;
 import com.libertymutualgroup.herman.aws.cft.CftPush;
+import com.libertymutualgroup.herman.aws.cft.CftPushContext;
+import com.libertymutualgroup.herman.aws.credentials.BambooCredentialsHandler;
+import com.libertymutualgroup.herman.aws.ecs.PropertyHandler;
 import com.libertymutualgroup.herman.logging.AtlassianBuildLogger;
-import org.apache.commons.io.IOUtils;
+import com.libertymutualgroup.herman.logging.HermanLogger;
+import com.libertymutualgroup.herman.util.FileUtil;
+import com.libertymutualgroup.herman.util.PropertyHandlerUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import java.io.InputStream;
+import java.util.Arrays;
+import java.util.List;
 
 public class CftPushTask extends AbstractDeploymentTask {
 
-    private final static String TASK_CONFIG_FILE = "/config/plugin-tasks.yml";
+    private static final List<String> CFT_FILE_NAMES = Arrays.asList("cft.template", "cft.yml", "cft.json");
 
     @Autowired
     public CftPushTask(CustomVariableContext customVariableContext) {
@@ -42,26 +46,53 @@ public class CftPushTask extends AbstractDeploymentTask {
     }
 
     @Override
-    public TaskResult doExecute(final DeploymentTaskContext taskContext) throws TaskException {
+    public TaskResult doExecute(final DeploymentTaskContext taskContext) {
         final AtlassianBuildLogger buildLogger = new AtlassianBuildLogger(taskContext.getBuildLogger());
+        final AWSCredentials sessionCredentials = BambooCredentialsHandler.getCredentials(taskContext);
+        final Regions awsRegion = Regions.fromName(taskContext.getConfigurationMap().get("awsRegion"));
+        final PropertyHandler handler = PropertyHandlerUtil.getTaskContextPropertyHandler(taskContext, sessionCredentials, getCustomVariableContext());
+        final CftPushTaskProperties taskProperties = CftPushPropertyFactory.getTaskProperties(sessionCredentials, buildLogger, awsRegion, handler);
 
-        CftPush push = new CftPush(buildLogger, taskContext, CredentialsHandler.getCredentials(taskContext),
-            CredentialsHandler.getConfiguration(), Regions.fromName(taskContext.getConfigurationMap().get("awsRegion")),
-            getCustomVariableContext(), getTaskProperties());
-        push.push();
+        CftPushContext context = new CftPushContext()
+            .withLogger(buildLogger)
+            .withEnvName(taskContext.getDeploymentContext().getEnvironmentName())
+            .withRootPath(taskContext.getRootDirectory().getAbsolutePath())
+            .withPropertyHandler(handler)
+            .withSessionCredentials(sessionCredentials)
+            .withAwsClientConfig(BambooCredentialsHandler.getConfiguration())
+            .withRegion(awsRegion)
+            .withTaskProperties(taskProperties);
+
+        CftPush push = new CftPush(context);
+        String name = deriveStackName(taskContext.getDeploymentContext().getDeploymentProjectName(), context.getEnvName());
+        String template = getTemplate(taskContext, buildLogger);
+        push.push(name, template);
 
         return TaskResultBuilder.newBuilder(taskContext).success().build();
     }
 
-    CFTPushTaskProperties getTaskProperties() {
-        try {
-            InputStream lambdaCreateTaskPropertiesStream = getClass().getResourceAsStream(TASK_CONFIG_FILE);
-            String lambdaCreateTaskPropertiesYml = IOUtils.toString(lambdaCreateTaskPropertiesStream);
-            ObjectMapper objectMapper = new ObjectMapper(new YAMLFactory());
-            return objectMapper.readValue(lambdaCreateTaskPropertiesYml, CFTPushTaskProperties.class);
-        } catch (Exception ex) {
-            throw new RuntimeException("Error getting Cft Push Task Properties from " + TASK_CONFIG_FILE, ex);
+    private String getTemplate(DeploymentTaskContext taskContext, HermanLogger buildLogger) {
+        String root = taskContext.getRootDirectory().getAbsolutePath();
+        FileUtil fileUtil = new FileUtil(root, buildLogger);
+
+        String template = null;
+        for (String fileName: CFT_FILE_NAMES) {
+            boolean fileExists = fileUtil.fileExists(fileName);
+            if (fileExists) {
+                template = fileUtil.findFile(fileName, false);
+                buildLogger.addLogEntry("Template used: " + fileName);
+            }
         }
+        if (template == null) {
+            throw new AwsExecException("CloudFormation template not found. Valid file names: "
+                + String.join(", ", CFT_FILE_NAMES));
+        }
+        return template;
+    }
+
+    private String deriveStackName(String deployProject, String deployEnvironment) {
+        String concat = deployProject.replace(" ", "-") + "-" + deployEnvironment.replace(" ", "-");
+        return concat.toLowerCase();
     }
 
 }

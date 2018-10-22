@@ -15,6 +15,7 @@
  */
 package com.libertymutualgroup.herman.aws.ecs;
 
+import com.amazonaws.ClientConfiguration;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.services.cloudformation.AmazonCloudFormation;
 import com.amazonaws.services.cloudformation.AmazonCloudFormationClientBuilder;
@@ -55,6 +56,8 @@ import com.amazonaws.services.ecs.model.ServiceEvent;
 import com.amazonaws.services.ecs.model.StopTaskRequest;
 import com.amazonaws.services.ecs.model.Task;
 import com.amazonaws.services.ecs.model.TaskDefinition;
+import com.amazonaws.services.ecs.model.TaskDefinitionPlacementConstraint;
+import com.amazonaws.services.ecs.model.TaskDefinitionPlacementConstraintType;
 import com.amazonaws.services.ecs.model.UpdateServiceRequest;
 import com.amazonaws.services.identitymanagement.AmazonIdentityManagement;
 import com.amazonaws.services.identitymanagement.AmazonIdentityManagementClientBuilder;
@@ -63,13 +66,15 @@ import com.amazonaws.services.kinesis.AmazonKinesis;
 import com.amazonaws.services.kinesis.AmazonKinesisClientBuilder;
 import com.amazonaws.services.kms.AWSKMS;
 import com.amazonaws.services.kms.AWSKMSClientBuilder;
-import com.amazonaws.services.kms.model.Tag;
 import com.amazonaws.services.lambda.AWSLambda;
 import com.amazonaws.services.lambda.AWSLambdaClientBuilder;
 import com.amazonaws.services.rds.AmazonRDS;
 import com.amazonaws.services.rds.AmazonRDSClientBuilder;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.securitytoken.AWSSecurityTokenService;
+import com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClientBuilder;
+import com.amazonaws.services.securitytoken.model.GetCallerIdentityRequest;
 import com.amazonaws.services.sns.AmazonSNS;
 import com.amazonaws.services.sns.AmazonSNSClientBuilder;
 import com.amazonaws.services.sqs.AmazonSQS;
@@ -103,12 +108,13 @@ import com.libertymutualgroup.herman.aws.ecs.loadbalancing.EcsLoadBalancerV2Hand
 import com.libertymutualgroup.herman.aws.ecs.loadbalancing.ElbOrAlbDecider;
 import com.libertymutualgroup.herman.aws.ecs.loadbalancing.ServicePurger;
 import com.libertymutualgroup.herman.aws.ecs.logging.LoggingService;
+import com.libertymutualgroup.herman.aws.tags.HermanTag;
+import com.libertymutualgroup.herman.aws.tags.TagUtil;
 import com.libertymutualgroup.herman.logging.HermanLogger;
 import com.libertymutualgroup.herman.task.ecs.ECSPushTaskProperties;
 import com.libertymutualgroup.herman.util.ArnUtil;
 import com.libertymutualgroup.herman.util.FileUtil;
 import org.apache.logging.log4j.util.Strings;
-import org.springframework.util.StopWatch;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -146,12 +152,13 @@ public class EcsPush {
     private AmazonSNS snsClient;
     private AmazonDynamoDB dynamoDbClient;
     private AWSLambda lambdaClient;
+    private AWSSecurityTokenService stsClient;
     private AmazonCloudWatch cloudWatchClient;
     private FileUtil fileUtil;
 
     public EcsPush(EcsPushContext context) {
         this.logger = context.getLogger();
-        this.bambooPropertyHandler = context.getBambooPropertyHandler();
+        this.bambooPropertyHandler = context.getPropertyHandler();
         this.taskProperties = context.getTaskProperties();
         this.pushContext = context;
 
@@ -212,6 +219,12 @@ public class EcsPush {
 
         this.lambdaClient = AWSLambdaClientBuilder.standard()
             .withCredentials(new AWSStaticCredentialsProvider(context.getSessionCredentials()))
+            .withClientConfiguration(new ClientConfiguration().withClientExecutionTimeout(300000).withSocketTimeout(300000))
+            .withRegion(context.getRegion())
+            .build();
+
+        this.stsClient = AWSSecurityTokenServiceClientBuilder.standard()
+            .withCredentials(new AWSStaticCredentialsProvider(context.getSessionCredentials()))
             .withClientConfiguration(context.getAwsClientConfig())
             .withRegion(context.getRegion())
             .build();
@@ -224,15 +237,30 @@ public class EcsPush {
     }
 
     public void push() {
-        StopWatch stopWatch = new StopWatch();
-        stopWatch.start();
-
         EcsPushDefinition definition = getEcsPushDefinition();
+
+        String accountId = this.stsClient.getCallerIdentity(new GetCallerIdentityRequest()).getAccount();
+        bambooPropertyHandler.addProperty("account.id", accountId);
+
+
+        ArrayList<TaskDefinitionPlacementConstraint> placementConstraints;
+        if (definition.getPlacementConstraints() == null) {
+            placementConstraints = new ArrayList<>();
+        }
+        else {
+            placementConstraints = new ArrayList<>(definition.getPlacementConstraints());
+        }
+        placementConstraints.add(new TaskDefinitionPlacementConstraint()
+            .withExpression("attribute:state !exists or attribute:state != pre-drain")
+            .withType(TaskDefinitionPlacementConstraintType.MemberOf));
+
+        definition.setPlacementConstraints(placementConstraints);
+
         logger.addLogEntry(definition.toString());
         logInvocationInCloudWatch(definition);
 
         EcsClusterIntrospector clusterIntrospector = new EcsClusterIntrospector(cftClient, ec2Client, logger);
-        EcsClusterMetadata clusterMetadata = clusterIntrospector.introspect(definition.getCluster());
+        EcsClusterMetadata clusterMetadata = clusterIntrospector.introspect(definition.getCluster(), pushContext.getRegion());
 
         LoggingService loggingService = new LoggingService(logger)
             .withSplunkInstanceValues(clusterMetadata.getSplunkUrl(), taskProperties);
@@ -254,7 +282,6 @@ public class EcsPush {
             definition.setTaskRoleArn(appRole.getArn());
         }
         bambooPropertyHandler.addProperty("app.iam", appRole.getArn());
-        bambooPropertyHandler.addProperty("account.id", ArnUtil.getAccountFromArn(appRole.getArn()));
 
         // Inject environment variables
         EcsDefaultEnvInjection injectMagic = new EcsDefaultEnvInjection();
@@ -272,15 +299,14 @@ public class EcsPush {
             boolean useAlb = decider.shouldUseAlb(definition.getAppName(), definition);
 
             DnsRegistrar dnsRegistrar = new DnsRegistrar(lambdaClient, logger, taskProperties.getDnsBrokerLambda());
-            CertHandler certHandler = new CertHandler(iamClient, logger, taskProperties.getSslCertificates());
+            CertHandler certHandler = new CertHandler(logger, taskProperties.getSslCertificates());
             if (useAlb) {
-                EcsLoadBalancerV2Handler loadBalancerV2Handler = new EcsLoadBalancerV2Handler(elbV2Client,
+                EcsLoadBalancerV2Handler loadBalancerV2Handler = new EcsLoadBalancerV2Handler(elbV2Client, lambdaClient,
                     certHandler, dnsRegistrar, logger, taskProperties);
                 bal = loadBalancerV2Handler.createLoadBalancer(clusterMetadata, definition);
             } else {
                 EcsLoadBalancerHandler loadBalancerHandler = new EcsLoadBalancerHandler(elbClient, certHandler,
-                    dnsRegistrar,
-                    logger, taskProperties);
+                    dnsRegistrar, logger, taskProperties);
                 bal = loadBalancerHandler.createLoadBalancer(clusterMetadata, definition);
             }
         }
@@ -311,8 +337,7 @@ public class EcsPush {
             runTask(clusterMetadata, ecsClient, taskResult.getTaskDefinition(), definition.getContainerDefinitions());
         }
 
-        stopWatch.stop();
-        logResultInCloudWatch(definition, stopWatch.getTotalTimeSeconds());
+        logResultInCloudWatch(definition);
     }
 
     private void provideConsoleLink(LoggingService loggingService, RegisterTaskDefinitionResult task, String cluster) {
@@ -320,9 +345,10 @@ public class EcsPush {
         String acct = ArnUtil.getAccountFromArn(task.getTaskDefinition().getTaskDefinitionArn());
         String region = pushContext.getRegion().getName();
 
-        String consoleLink = String.format(taskProperties.getEcsConsoleLinkPattern(), acct, region, cluster, family);
-        loggingService.logSection("ECS Console", consoleLink);
-
+        if (taskProperties.getEcsConsoleLinkPattern() != null) {
+            String consoleLink = String.format(taskProperties.getEcsConsoleLinkPattern(), acct, region, cluster, family);
+            loggingService.logSection("ECS Console", consoleLink);
+        }
     }
 
     private EcsPushDefinition getEcsPushDefinition() {
@@ -519,7 +545,6 @@ public class EcsPush {
                 }
 
                 ecsClient.updateService(updateRequest);
-
                 waitForRequestInitialization(appName, ecsClient, clusterMetadata);
                 boolean rollbackSuccessful = waitForDeployment(appName, ecsClient, clusterMetadata);
 
@@ -588,7 +613,7 @@ public class EcsPush {
 
         while (timeoutCount > 0) {
             try {
-                Thread.sleep(10000);
+                Thread.sleep(POLLING_INTERVAL_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new AwsExecException(INTERRUPTED_WHILE_POLLING);
@@ -607,6 +632,7 @@ public class EcsPush {
                     }
                 }
             }
+            timeoutCount--;
         }
         setUnsuccessfulServiceToZero(appName, ecsClient, clusterMetadata);
         throw new AwsExecException("AWS never initiated the deployment");
@@ -678,8 +704,8 @@ public class EcsPush {
         EcsClusterMetadata clusterMetadata) {
 
         String applicationKeyId = brokerKms(definition, clusterMetadata);
-        brokerS3(definition, clusterMetadata);
-        brokerKinesisStream(definition, clusterMetadata);
+        brokerS3(definition, clusterMetadata, applicationKeyId);
+        brokerKinesisStream(definition);
         brokerSqs(definition);
         brokerSns(definition);
         brokerRds(definition, injectMagic, clusterMetadata, applicationKeyId);
@@ -688,17 +714,19 @@ public class EcsPush {
 
 
     private String brokerKms(EcsPushDefinition definition, EcsClusterMetadata clusterMetadata) {
-        KmsBroker broker = new KmsBroker(logger, bambooPropertyHandler, fileUtil, taskProperties);
+        KmsBroker broker = new KmsBroker(logger, bambooPropertyHandler, fileUtil, taskProperties,
+            this.pushContext.getSessionCredentials(), this.pushContext.getCustomConfigurationBucket(), this.pushContext.getRegion());
 
-        List<Tag> tags = new ArrayList<>();
-        tags.add(new Tag().withTagKey(taskProperties.getSbuTagKey()).withTagValue(clusterMetadata.getNewrelicSbuTag()));
-        tags.add(new Tag().withTagKey(taskProperties.getOrgTagKey()).withTagValue(clusterMetadata.getNewrelicOrgTag()));
-        tags.add(new Tag().withTagKey(taskProperties.getAppTagKey()).withTagValue(definition.getAppName()));
-        tags.add(new Tag().withTagKey(taskProperties.getClusterTagKey()).withTagValue(clusterMetadata.getClusterId()));
+        List<HermanTag> tags = new ArrayList<>();
+        tags.add(new HermanTag(taskProperties.getSbuTagKey(), clusterMetadata.getNewrelicSbuTag()));
+        tags.add(new HermanTag(taskProperties.getOrgTagKey(), clusterMetadata.getNewrelicOrgTag()));
+        tags.add(new HermanTag(taskProperties.getAppTagKey(), definition.getAppName()));
+        tags.add(new HermanTag(taskProperties.getClusterTagKey(), clusterMetadata.getClusterId()));
 
+        tags = TagUtil.mergeTags(tags, definition.getTags());
         String applicationKeyId = Strings.EMPTY;
         if (broker.isActive(definition)) {
-            applicationKeyId = broker.brokerKey(kmsClient, definition, tags);
+            applicationKeyId = broker.brokerKey(kmsClient, definition, TagUtil.hermanToKmsTags(tags));
         } else {
             broker.deleteKey(kmsClient, definition);
         }
@@ -731,9 +759,9 @@ public class EcsPush {
             for (SqsQueue queue : definition.getQueues()) {
                 if (queue.getPolicyName() != null) {
                     String policy = fileUtil.findFile(queue.getPolicyName(), false);
-                    sqsBroker.brokerQueue(sqsClient, queue, policy);
+                    sqsBroker.brokerQueue(sqsClient, queue, policy, definition.getTags());
                 } else {
-                    sqsBroker.brokerQueue(sqsClient, queue, null);
+                    sqsBroker.brokerQueue(sqsClient, queue, null, definition.getTags());
                 }
             }
         }
@@ -754,23 +782,22 @@ public class EcsPush {
 
     }
 
-    private void brokerS3(EcsPushDefinition definition, EcsClusterMetadata clusterMetadata) {
+    private void brokerS3(EcsPushDefinition definition, EcsClusterMetadata clusterMetadata, String kmsKeyId) {
         S3Broker s3Broker = new S3Broker(new S3CreateContext().fromECSPushContext(pushContext));
         if (definition.getBuckets() != null) {
             for (S3Bucket bucket : definition.getBuckets()) {
                 if (bucket.getPolicyName() != null) {
                     String policy = fileUtil.findFile(bucket.getPolicyName(), false);
-                    s3Broker.brokerBucketFromEcsPush(s3Client, bucket, policy, clusterMetadata, definition);
+                    s3Broker.brokerBucketFromEcsPush(s3Client, kmsClient, bucket, policy, kmsKeyId, clusterMetadata, definition);
                 } else {
-                    s3Broker.brokerBucketFromEcsPush(s3Client, bucket, null, clusterMetadata, definition);
+                    s3Broker.brokerBucketFromEcsPush(s3Client, kmsClient, bucket, null, kmsKeyId, clusterMetadata, definition);
                 }
             }
         }
     }
 
-    private void brokerKinesisStream(EcsPushDefinition definition, EcsClusterMetadata clusterMetadata) {
-        KinesisBroker kinesisBroker = new KinesisBroker(logger, kinesisClient, clusterMetadata,
-            definition, taskProperties);
+    private void brokerKinesisStream(EcsPushDefinition definition) {
+        KinesisBroker kinesisBroker = new KinesisBroker(logger, kinesisClient, definition, taskProperties);
 
         // delete any streams tied to this app that are no longer specified in the PushDefinition
         kinesisBroker.checkStreamsToBeDeleted();
@@ -783,7 +810,7 @@ public class EcsPush {
     }
 
     private void brokerDynamoDB(EcsPushDefinition definition) {
-        DynamoDBBroker dynamoDBBroker = new DynamoDBBroker(logger, iamClient, definition, taskProperties);
+        DynamoDBBroker dynamoDBBroker = new DynamoDBBroker(logger, definition);
 
         if (definition.getDynamoDBTables() != null) {
             dynamoDBBroker.createDynamoDBTables(dynamoDbClient);
@@ -791,19 +818,21 @@ public class EcsPush {
     }
 
     private void brokerServicesPostPush(EcsPushDefinition definition, EcsClusterMetadata meta) {
-        NewRelicBrokerConfiguration newRelicBrokerConfiguration = new NewRelicBrokerConfiguration()
-            .withBrokerProperties(taskProperties.getNewRelic());
-        NewRelicBroker newRelicBroker = new NewRelicBroker(
-            bambooPropertyHandler,
-            logger,
-            fileUtil,
-            newRelicBrokerConfiguration,
-            lambdaClient);
-        newRelicBroker.brokerNewRelicApplicationDeployment(
-            definition.getNewRelic(),
-            definition.getAppName(),
-            definition.getNewRelicApplicationName(),
-            meta.getNewrelicLicenseKey());
+        if (taskProperties.getNewRelic() != null) {
+            NewRelicBrokerConfiguration newRelicBrokerConfiguration = new NewRelicBrokerConfiguration()
+                .withBrokerProperties(taskProperties.getNewRelic());
+            NewRelicBroker newRelicBroker = new NewRelicBroker(
+                bambooPropertyHandler,
+                logger,
+                fileUtil,
+                newRelicBrokerConfiguration,
+                lambdaClient);
+            newRelicBroker.brokerNewRelicApplicationDeployment(
+                definition.getNewRelic(),
+                definition.getAppName(),
+                definition.getNewRelicApplicationName(),
+                meta.getNewrelicLicenseKey());
+        }
 
         if (definition.getBetaAutoscale() != null) {
             AutoscalingBroker asb = new AutoscalingBroker(pushContext);
@@ -833,7 +862,7 @@ public class EcsPush {
         }
     }
 
-    private void logResultInCloudWatch(EcsPushDefinition definition, double totalTimeSeconds) {
+    private void logResultInCloudWatch(EcsPushDefinition definition) {
         try {
             MetricDatum d = new MetricDatum().withMetricName("Result")
                 .withDimensions(
@@ -848,8 +877,7 @@ public class EcsPush {
                             : "current-plugin"),
                     new Dimension().withName("engine").withValue(taskProperties.getEngine()),
                     new Dimension().withName("propKeysRequired").withValue(
-                        String.join(",", ((TaskContextPropertyHandler) bambooPropertyHandler).getPropertyKeysUsed())),
-                    new Dimension().withName("durationSeconds").withValue(String.format("%.2f", totalTimeSeconds)))
+                        String.join(",", ((TaskContextPropertyHandler) bambooPropertyHandler).getPropertyKeysUsed())))
                 .withUnit(StandardUnit.Count).withValue(1.0).withTimestamp(new Date());
 
             cloudWatchClient.putMetricData(new PutMetricDataRequest().withNamespace("Herman/Deploy").withMetricData(d));

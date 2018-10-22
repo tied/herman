@@ -15,6 +15,8 @@
  */
 package com.libertymutualgroup.herman.task.newrelic;
 
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.lambda.AWSLambda;
@@ -27,26 +29,23 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.libertymutualgroup.herman.aws.AbstractDeploymentTask;
 import com.libertymutualgroup.herman.aws.AwsExecException;
-import com.libertymutualgroup.herman.aws.CredentialsHandler;
+import com.libertymutualgroup.herman.aws.credentials.BambooCredentialsHandler;
 import com.libertymutualgroup.herman.aws.ecs.PropertyHandler;
-import com.libertymutualgroup.herman.aws.ecs.TaskContextPropertyHandler;
 import com.libertymutualgroup.herman.aws.ecs.broker.newrelic.NewRelicBroker;
 import com.libertymutualgroup.herman.aws.ecs.broker.newrelic.NewRelicBrokerConfiguration;
 import com.libertymutualgroup.herman.aws.ecs.broker.newrelic.NewRelicDefinition;
 import com.libertymutualgroup.herman.logging.AtlassianBuildLogger;
 import com.libertymutualgroup.herman.logging.HermanLogger;
+import com.libertymutualgroup.herman.util.ConfigurationUtil;
 import com.libertymutualgroup.herman.util.FileUtil;
-import org.apache.commons.io.IOUtils;
+import com.libertymutualgroup.herman.util.PropertyHandlerUtil;
 import org.springframework.beans.factory.annotation.Autowired;
-
-import java.io.InputStream;
 
 public class NewRelicBrokerTask extends AbstractDeploymentTask {
 
     private static final String NEWRELIC_TEMPLATE = "newrelic-template";
     private static final String JSON = ".json";
     private static final String YML = ".yml";
-    private final static String TASK_CONFIG_FILE = "/config/plugin-tasks.yml";
 
     @Autowired
     public NewRelicBrokerTask(CustomVariableContext customVariableContext) {
@@ -56,20 +55,22 @@ public class NewRelicBrokerTask extends AbstractDeploymentTask {
     @Override
     public TaskResult doExecute(final DeploymentTaskContext taskContext) {
         final AtlassianBuildLogger buildLogger = new AtlassianBuildLogger(taskContext.getBuildLogger());
-        final PropertyHandler bambooPropertyHandler = new TaskContextPropertyHandler(taskContext,
-            getCustomVariableContext());
+        final AWSCredentialsProvider awsCredentialsProvider = new AWSStaticCredentialsProvider(BambooCredentialsHandler.getCredentials(taskContext));
         final FileUtil fileUtil = new FileUtil(taskContext.getRootDirectory().getAbsolutePath(), buildLogger);
+        final Regions region = Regions.fromName(taskContext.getConfigurationMap().get("awsRegion"));
+        final PropertyHandler bambooPropertyHandler = PropertyHandlerUtil.getTaskContextPropertyHandler(
+            taskContext, awsCredentialsProvider.getCredentials(), getCustomVariableContext());
 
         NewRelicDefinition newRelicDefinition = getNewRelicDefinition(bambooPropertyHandler, buildLogger, fileUtil);
         buildLogger.addLogEntry(newRelicDefinition.toString());
 
         AWSLambda lambdaClient = AWSLambdaClientBuilder.standard()
-            .withCredentials(new AWSStaticCredentialsProvider(CredentialsHandler.getCredentials(taskContext)))
-            .withClientConfiguration(CredentialsHandler.getConfiguration())
-            .withRegion(Regions.fromName(taskContext.getConfigurationMap().get("awsRegion")))
+            .withCredentials(awsCredentialsProvider)
+            .withClientConfiguration(BambooCredentialsHandler.getConfiguration())
+            .withRegion(region)
             .build();
 
-        NewRelicBrokerConfiguration newRelicBrokerConfiguration = getTaskProperties();
+        NewRelicBrokerConfiguration newRelicBrokerConfiguration = getTaskProperties(awsCredentialsProvider.getCredentials(), buildLogger, region, bambooPropertyHandler);
         NewRelicBroker newRelicBroker = new NewRelicBroker(
             bambooPropertyHandler,
             buildLogger,
@@ -119,14 +120,13 @@ public class NewRelicBrokerTask extends AbstractDeploymentTask {
         return newRelicDefinition.withFormattedPolicyName();
     }
 
-    NewRelicBrokerConfiguration getTaskProperties() {
+    NewRelicBrokerConfiguration getTaskProperties(AWSCredentials sessionCredentials, HermanLogger hermanLogger, Regions region, PropertyHandler handler) {
         try {
-            InputStream newRelicBrokerConfigurationStream = getClass().getResourceAsStream(TASK_CONFIG_FILE);
-            String newRelicBrokerConfigurationYml = IOUtils.toString(newRelicBrokerConfigurationStream);
+            String newRelicBrokerConfigurationYml = ConfigurationUtil.getHermanConfigurationAsString(sessionCredentials, hermanLogger, region);
             ObjectMapper objectMapper = new ObjectMapper(new YAMLFactory());
-            return objectMapper.readValue(newRelicBrokerConfigurationYml, NewRelicBrokerConfiguration.class);
+            return objectMapper.readValue(handler.mapInProperties(newRelicBrokerConfigurationYml), NewRelicBrokerConfiguration.class);
         } catch (Exception ex) {
-            throw new RuntimeException("Error getting NewRelic Broker Configuration from " + TASK_CONFIG_FILE, ex);
+            throw new RuntimeException("Error getting NewRelic Broker Configuration", ex);
         }
     }
 }

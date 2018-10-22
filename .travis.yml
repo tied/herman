@@ -1,0 +1,38 @@
+language: java
+jdk: oraclejdk8
+sudo: false
+cache:
+  directories:
+  - "$HOME/.m2"
+branches:
+  except:
+    - /^v[0-9]/
+before_install:
+  - export TZ=America/New_York
+  - date
+  - export BUILD_VERSION="1.0.$TRAVIS_BUILD_NUMBER"
+  - mvn org.codehaus.mojo:versions-maven-plugin:2.2:set -DnewVersion=$BUILD_VERSION
+
+before_deploy:
+  - ls target
+  - sed -i "s~<BUILD_VERSION>~$BUILD_VERSION~g" bintray-descriptor.json
+
+notifications:
+  email: false
+
+deploy:
+  - provider: releases
+    api_key: $GH_DEPLOY_TOKEN
+    file: target/herman-bamboo-plugin-$BUILD_VERSION.jar
+    skip_cleanup: true
+    on:
+      repo: libertymutual/herman
+      tags: true
+  - provider: bintray
+    file: bintray-descriptor.json
+    user: $BINTRAY_DEPLOY_USER
+    key: $BINTRAY_DEPLOY_KEY
+    skip_cleanup: true
+    on:
+      repo: libertymutual/herman
+      tags: true

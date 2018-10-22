@@ -15,12 +15,21 @@
  */
 package com.libertymutualgroup.herman.aws.lambda;
 
+import com.amazonaws.services.ec2.model.SecurityGroup;
 import com.amazonaws.services.ecs.model.KeyValuePair;
+import com.libertymutualgroup.herman.aws.ecs.broker.dynamodb.DynamoAppDefinition;
+import com.libertymutualgroup.herman.aws.ecs.broker.dynamodb.DynamoDBTable;
 import com.libertymutualgroup.herman.aws.ecs.broker.iam.IamAppDefinition;
+import com.libertymutualgroup.herman.aws.ecs.broker.kinesis.KinesisAppDefinition;
+import com.libertymutualgroup.herman.aws.ecs.broker.kinesis.KinesisStream;
 import com.libertymutualgroup.herman.aws.ecs.broker.kms.KmsAppDefinition;
+import com.libertymutualgroup.herman.aws.ecs.broker.sns.SnsTopic;
+import com.libertymutualgroup.herman.aws.ecs.broker.sqs.SqsQueue;
+import com.libertymutualgroup.herman.aws.tags.HermanTag;
+
 import java.util.List;
 
-public class LambdaInjectConfiguration implements IamAppDefinition, KmsAppDefinition {
+public class LambdaInjectConfiguration implements IamAppDefinition, KmsAppDefinition, DynamoAppDefinition, KinesisAppDefinition {
 
     private String functionName;
     private String zipFileName;
@@ -29,14 +38,25 @@ public class LambdaInjectConfiguration implements IamAppDefinition, KmsAppDefini
     private Integer memorySize = 128;
     private String runtime;
     private Integer timeout = 5;
-    private String vpcId;
     private String iamPolicy;
+    private String assumeRolePolicy;
     private String useKms = "false";
     private String kmsKeyName;
+    private SecurityGroup customSecurityGroup;
+    private List<String> subnetIds;
+    private List<String> securityGroupIds;
+    private List<KinesisStream> streams;
+    private List<SqsQueue> queues;
+    private List<SnsTopic> topics;
+    private List<DynamoDBTable> dynamoDBTables;
+    private List<HermanTag> tags;
 
-    @Override
-    public String getAppName() {
-        return functionName;
+    public SecurityGroup getCustomSecurityGroup() {
+        return customSecurityGroup;
+    }
+
+    public void setCustomSecurityGroup(SecurityGroup customSecurityGroup) {
+        this.customSecurityGroup = customSecurityGroup;
     }
 
     public String getFunctionName() {
@@ -95,12 +115,20 @@ public class LambdaInjectConfiguration implements IamAppDefinition, KmsAppDefini
         this.timeout = timeout;
     }
 
-    public String getVpcId() {
-        return vpcId;
+    public List<String> getSubnetIds() {
+        return subnetIds;
     }
 
-    public void setVpcId(String vpcId) {
-        this.vpcId = vpcId;
+    public void setSubnetIds(List<String> subnetIds) {
+        this.subnetIds = subnetIds;
+    }
+
+    public List<String> getSecurityGroupIds() {
+        return securityGroupIds;
+    }
+
+    public void setSecurityGroupIds(List<String> securityGroupIds) {
+        this.securityGroupIds = securityGroupIds;
     }
 
     public String getIamPolicy() {
@@ -126,5 +154,150 @@ public class LambdaInjectConfiguration implements IamAppDefinition, KmsAppDefini
 
     public void setKmsKeyName(String kmsKeyName) {
         this.kmsKeyName = kmsKeyName;
+    }
+
+    public String getAssumeRolePolicy() {
+        return assumeRolePolicy;
+    }
+
+    public void setAssumeRolePolicy(String assumeRolePolicy) {
+        this.assumeRolePolicy = assumeRolePolicy;
+    }
+
+    public List<KinesisStream> getStreams() {
+        return streams;
+    }
+
+    public void setStreams(List<KinesisStream> streams) {
+        this.streams = streams;
+    }
+
+    public List<SqsQueue> getQueues() {
+        return queues;
+    }
+
+    public void setQueues(List<SqsQueue> queues) {
+        this.queues = queues;
+    }
+
+    public List<SnsTopic> getTopics() {
+        return topics;
+    }
+
+    public void setTopics(List<SnsTopic> topics) {
+        this.topics = topics;
+    }
+
+    @Override
+    public List<DynamoDBTable> getDynamoDBTables() {
+        return dynamoDBTables;
+    }
+
+    public void setDynamoDBTables(List<DynamoDBTable> dynamoDBTables) {
+        this.dynamoDBTables = dynamoDBTables;
+    }
+
+    @Override public List<HermanTag> getTags() {
+        return tags;
+    }
+
+    public void setTags(List<HermanTag> tags) {
+        this.tags = tags;
+    }
+
+    public LambdaInjectConfiguration withFunctionName(final String functionName) {
+        this.functionName = functionName;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withZipFileName(final String zipFileName) {
+        this.zipFileName = zipFileName;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withEnvironment(
+        final List<KeyValuePair> environment) {
+        this.environment = environment;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withHandler(final String handler) {
+        this.handler = handler;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withMemorySize(final Integer memorySize) {
+        this.memorySize = memorySize;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withRuntime(final String runtime) {
+        this.runtime = runtime;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withTimeout(final Integer timeout) {
+        this.timeout = timeout;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withSubnetIds(final List<String> subnetIds) {
+        this.subnetIds = subnetIds;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withSecurityGroupIds(final List<String> securityGroupIds) {
+        this.securityGroupIds = securityGroupIds;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withIamPolicy(final String iamPolicy) {
+        this.iamPolicy = iamPolicy;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withUseKms(final String useKms) {
+        this.useKms = useKms;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withKmsKeyName(final String kmsKeyName) {
+        this.kmsKeyName = kmsKeyName;
+        return this;
+    }
+
+    public LambdaInjectConfiguration withCustomSecurityGroup(final SecurityGroup customSecurityGroup) {
+        this.customSecurityGroup = customSecurityGroup;
+        return this;
+    }
+
+    @Override
+    public String getAppName() {
+        return functionName;
+    }
+
+    @Override
+    public String toString() {
+        return "LambdaInjectConfiguration{" +
+            "functionName='" + functionName + '\'' +
+            ", zipFileName='" + zipFileName + '\'' +
+            ", environment=" + environment +
+            ", handler='" + handler + '\'' +
+            ", memorySize=" + memorySize +
+            ", runtime='" + runtime + '\'' +
+            ", timeout=" + timeout +
+            ", subnetIds=" + subnetIds +
+            ", securityGroupIds=" + securityGroupIds +
+            ", iamPolicy='" + iamPolicy + '\'' +
+            ", assumeRolePolicy='" + assumeRolePolicy + '\'' +
+            ", useKms='" + useKms + '\'' +
+            ", kmsKeyName='" + kmsKeyName + '\'' +
+            ", customSecurityGroup=" + customSecurityGroup +
+            ", streams=" + streams +
+            ", queues=" + queues +
+            ", topics=" + topics +
+            ", dynamoDbTables=" + dynamoDBTables +
+            ", tags=" + tags +
+            '}';
     }
 }

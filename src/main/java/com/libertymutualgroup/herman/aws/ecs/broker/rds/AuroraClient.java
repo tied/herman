@@ -50,6 +50,8 @@ import com.amazonaws.services.rds.model.RebootDBInstanceRequest;
 import com.amazonaws.services.rds.model.Tag;
 import com.libertymutualgroup.herman.aws.AwsExecException;
 import com.libertymutualgroup.herman.aws.ecs.cluster.EcsClusterMetadata;
+import com.libertymutualgroup.herman.aws.tags.HermanTag;
+import com.libertymutualgroup.herman.aws.tags.TagUtil;
 import com.libertymutualgroup.herman.logging.HermanLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,10 +71,10 @@ public class AuroraClient implements RdsClient {
     private AmazonRDS client;
     private RdsInstance rds;
     private EcsClusterMetadata clusterMetadata;
-    private List<Tag> tags;
+    private List<HermanTag> tags;
     private HermanLogger buildLogger;
 
-    AuroraClient(AmazonRDS client, RdsInstance rds, EcsClusterMetadata clusterMetadata, List<Tag> tags,
+    AuroraClient(AmazonRDS client, RdsInstance rds, EcsClusterMetadata clusterMetadata, List<HermanTag> tags,
         HermanLogger buildLogger) {
         this.client = client;
         this.rds = rds;
@@ -202,7 +204,7 @@ public class AuroraClient implements RdsClient {
                 .withDBClusterParameterGroupName(dbClusterParameterGroupName)
                 .withDescription(String.format("%s %s Parameter Group", rdsResult.getDBClusterIdentifier(),
                     dbEngineVersion.getDBParameterGroupFamily()))
-                .withTags(tags));
+                .withTags(TagUtil.hermanToRdsTags(tags)));
 
             buildLogger
                 .addLogEntry("Updating parameters for DB cluster parameter group " + dbClusterParameterGroupName);
@@ -286,15 +288,20 @@ public class AuroraClient implements RdsClient {
         createDbClusterRequest.withAvailabilityZones(rds.getAvailabilityZones())
             .withBackupRetentionPeriod(rds.getBackupRetentionPeriod())
             .withCharacterSetName(rds.getCharacterSetName())
-            .withDBClusterIdentifier(clusterId).withDatabaseName(rds.getDBName())
-            .withDBSubnetGroupName(clusterMetadata.getDbSubnetGroup()).withEngine(rds.getEngine())
-            .withEngineVersion(rds.getEngineVersion()).withKmsKeyId(rds.getKmsKeyId())
+            .withDBClusterIdentifier(clusterId)
+            .withDatabaseName(rds.getDBName())
+            .withDBSubnetGroupName(clusterMetadata.getDbSubnetGroup())
+            .withEngine(rds.getEngine())
+            .withEngineVersion(rds.getEngineVersion())
+            .withKmsKeyId(rds.getKmsKeyId())
             .withMasterUsername(rds.getMasterUsername())
             .withMasterUserPassword(masterUserPassword)
-            .withPort(rds.getDbInstancePort()).withPreferredBackupWindow(rds.getPreferredBackupWindow())
+            .withPort(rds.getDbInstancePort())
+            .withPreferredBackupWindow(rds.getPreferredBackupWindow())
             .withPreferredMaintenanceWindow(rds.getPreferredMaintenanceWindow())
             .withStorageEncrypted(true)
-            .withTags(tags).withEnableIAMDatabaseAuthentication(rds.getIAMDatabaseAuthenticationEnabled())
+            .withTags(TagUtil.hermanToRdsTags(tags))
+            .withEnableIAMDatabaseAuthentication(rds.getIAMDatabaseAuthenticationEnabled())
             .withVpcSecurityGroupIds(rds.getAdditionalSecGroups());
         return client.createDBCluster(createDbClusterRequest);
     }
@@ -316,7 +323,7 @@ public class AuroraClient implements RdsClient {
             .withEnableIAMDatabaseAuthentication(rds.getIAMDatabaseAuthenticationEnabled())
             .withVpcSecurityGroupIds(rds.getAdditionalSecGroups()).withApplyImmediately(true);
         DBCluster cluster = client.modifyDBCluster(clusterRequest);
-        this.applyTags(cluster.getDBClusterArn(), tags);
+        this.applyTags(cluster.getDBClusterArn(), TagUtil.hermanToRdsTags(tags));
         return cluster;
     }
 
@@ -327,15 +334,22 @@ public class AuroraClient implements RdsClient {
         CreateDBInstanceRequest createReplicaRequest = new CreateDBInstanceRequest();
         createReplicaRequest.withAvailabilityZone(availabilityZone)
             .withAutoMinorVersionUpgrade(rds.getAutoMinorVersionUpgrade())
-            .withCharacterSetName(rds.getCharacterSetName()).withCopyTagsToSnapshot(rds.getCopyTagsToSnapshot())
-            .withDBClusterIdentifier(cluster.getDBClusterIdentifier()).withDBInstanceClass(rds.getDBInstanceClass())
-            .withDBInstanceIdentifier(instanceIdentifier).withDBSubnetGroupName(clusterMetadata.getDbSubnetGroup())
-            .withEngine(rds.getEngine()).withEngineVersion(rds.getEngineVersion())
-            .withIops(rds.getIops()).withLicenseModel(rds.getLicenseModel())
+            .withCharacterSetName(rds.getCharacterSetName())
+            .withCopyTagsToSnapshot(rds.getCopyTagsToSnapshot())
+            .withDBClusterIdentifier(cluster.getDBClusterIdentifier())
+            .withDBInstanceClass(rds.getDBInstanceClass())
+            .withDBInstanceIdentifier(instanceIdentifier)
+            .withDBSubnetGroupName(clusterMetadata.getDbSubnetGroup())
+            .withEngine(rds.getEngine())
+            .withEngineVersion(rds.getEngineVersion())
+            .withIops(rds.getIops())
+            .withLicenseModel(rds.getLicenseModel())
             .withMonitoringInterval(rds.getMonitoringInterval())
             .withMonitoringRoleArn(rds.getMonitoringRoleArn())
-            .withPubliclyAccessible(rds.getPubliclyAccessible()).withStorageEncrypted(true)
-            .withTags(tags).withTimezone(rds.getTimezone());
+            .withPubliclyAccessible(rds.getPubliclyAccessible())
+            .withStorageEncrypted(true)
+            .withTags(TagUtil.hermanToRdsTags(tags))
+            .withTimezone(rds.getTimezone());
 
         return client.createDBInstance(createReplicaRequest);
     }
@@ -356,7 +370,7 @@ public class AuroraClient implements RdsClient {
             .withMonitoringRoleArn(rds.getMonitoringRoleArn())
             .withPubliclyAccessible(rds.getPubliclyAccessible());
         DBInstance dbInstance = client.modifyDBInstance(modifyDBInstanceRequest);
-        this.applyTags(dbInstance.getDBInstanceArn(), tags);
+        this.applyTags(dbInstance.getDBInstanceArn(), TagUtil.hermanToRdsTags(tags));
     }
 
     private void modifyCreateAuroraInstance(String availabilityZone, DBCluster cluster, String clusterId) {
